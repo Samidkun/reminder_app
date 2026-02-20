@@ -3,16 +3,17 @@ import 'dart:ui';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:isar/isar.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'isar_service.dart';
-import '../features/alarm/data/models/alarm_model.dart';
+import '../../features/alarm/data/models/alarm_model.dart';
 
 class AlarmService {
   static const String _isolateName = 'alarm_isolate';
-  
+
   static AudioPlayer? _backgroundAudioPlayer;
   static FlutterLocalNotificationsPlugin? _backgroundNotifications;
 
@@ -23,39 +24,50 @@ class AlarmService {
 
   /// Cancel all scheduled alarms
   static Future<void> cancelAll() async {
-    await AndroidAlarmManager.cancelAll();
+    try {
+      final isar = await IsarService.getInstance();
+      final alarms = await isar.alarmModels.where().findAll();
+      for (final alarm in alarms) {
+        await AndroidAlarmManager.cancel(alarm.id);
+      }
+    } catch (e) {
+      print('Error cancelling all alarms: $e');
+    }
   }
 
   /// Initialize the alarm manager in the main isolate
   static Future<void> init() async {
     await AndroidAlarmManager.initialize();
-    
+
     // Reboot Recovery: Reschedule all active alarms on app start
     await rescheduleAllActiveAlarms();
   }
 
   /// Reboot Recovery: Reregister all isActive alarms with the System
   static Future<void> rescheduleAllActiveAlarms() async {
-    final isar = await IsarService.getInstance();
-    final activeAlarms = await isar.alarmModels.filter().isActiveEqualTo(true).findAll();
-    
-    for (final alarm in activeAlarms) {
-      if (alarm.time.isAfter(DateTime.now())) {
-        await scheduleAlarm(alarm.id, alarm.time);
-      } else if (alarm.repeatDays.isNotEmpty) {
-        // If the time has passed but it's recurring, calculate next occurrence
-        final nextTime = _calculateNextOccurrence(alarm.time, alarm.repeatDays);
-        await scheduleAlarm(alarm.id, nextTime);
+    try {
+      final isar = await IsarService.getInstance();
+      final activeAlarms =
+          await isar.alarmModels.filter().isActiveEqualTo(true).findAll();
+
+      for (final alarm in activeAlarms) {
+        if (alarm.time.isAfter(DateTime.now())) {
+          await scheduleAlarm(alarm.id, alarm.time);
+        } else if (alarm.repeatDays.isNotEmpty) {
+          final nextTime =
+              _calculateNextOccurrence(alarm.time, alarm.repeatDays);
+          await scheduleAlarm(alarm.id, nextTime);
+        }
       }
+    } catch (e) {
+      print('Error rescheduling alarms: $e');
     }
   }
 
-  /// Request necessary permissions for Android 12+ and 13+
+  /// Request necessary permissions
   static Future<void> requestPermissions() async {
     await Permission.notification.request();
     await Permission.scheduleExactAlarm.request();
-    
-    // Check Battery Optimizations
     await checkBatteryOptimization();
   }
 
@@ -74,24 +86,24 @@ class AlarmService {
   @pragma('vm:entry-point')
   static Future<void> callback(int id) async {
     print('Alarm triggered for ID: $id at ${DateTime.now()}');
-    
-    // 1. Enforce Maximum Volume on Alarm Stream
-    VolumeController().setVolume(1.0); 
 
-    // 2. Initialize plugins
+    VolumeController().setVolume(1.0);
+
     _backgroundNotifications ??= FlutterLocalNotificationsPlugin();
     _backgroundAudioPlayer ??= AudioPlayer();
 
-    // 3. Fetch alarm details from Isar
-    final isar = await IsarService.getInstance();
-    final alarm = await isar.alarmModels.get(id);
-    
-    if (alarm == null) return;
+    try {
+      final isar = await IsarService.getInstance();
+      final alarm = await isar.alarmModels.get(id);
 
-    // 4. Show Notification & Play Sound
-    await _showAlarmNotification(_backgroundNotifications!, alarm);
-    await _playAlarmSound(_backgroundAudioPlayer!, alarm.audioPath);
-    
+      if (alarm == null) return;
+
+      await _showAlarmNotification(_backgroundNotifications!, alarm);
+      await _playAlarmSound(_backgroundAudioPlayer!, alarm.audioPath);
+    } catch (e) {
+      print('Error in background callback: $e');
+    }
+
     final SendPort? send = IsolateNameServer.lookupPortByName(_isolateName);
     send?.send(id);
   }
@@ -111,33 +123,37 @@ class AlarmService {
 
   /// Handle Alarm Dismissal (Auto-Reschedule if recurring)
   static Future<void> handleAlarmDismissal(int id) async {
-    final isar = await IsarService.getInstance();
-    final alarm = await isar.alarmModels.get(id);
+    try {
+      final isar = await IsarService.getInstance();
+      final alarm = await isar.alarmModels.get(id);
 
-    if (alarm != null) {
-      if (alarm.repeatDays.isNotEmpty) {
-        // Calculate and schedule next occurrence
-        final nextTime = _calculateNextOccurrence(alarm.time, alarm.repeatDays);
-        alarm.time = nextTime;
-        
-        await isar.writeTxn(() async {
-          await isar.alarmModels.put(alarm);
-        });
-        
-        await scheduleAlarm(alarm.id, nextTime);
-      } else {
-        // Non-recurring: deactivate
-        alarm.isActive = false;
-        await isar.writeTxn(() async {
-          await isar.alarmModels.put(alarm);
-        });
+      if (alarm != null) {
+        if (alarm.repeatDays.isNotEmpty) {
+          final nextTime =
+              _calculateNextOccurrence(alarm.time, alarm.repeatDays);
+          alarm.time = nextTime;
+
+          await isar.writeTxn(() async {
+            await isar.alarmModels.put(alarm);
+          });
+
+          await scheduleAlarm(alarm.id, nextTime);
+        } else {
+          alarm.isActive = false;
+          await isar.writeTxn(() async {
+            await isar.alarmModels.put(alarm);
+          });
+        }
       }
+    } catch (e) {
+      print('Error dismissing alarm: $e');
     }
 
     await stopAlarm();
   }
 
-  static DateTime _calculateNextOccurrence(DateTime currentTime, List<int> repeatDays) {
+  static DateTime _calculateNextOccurrence(
+      DateTime currentTime, List<int> repeatDays) {
     if (repeatDays.isEmpty) return currentTime.add(const Duration(days: 1));
 
     DateTime nextDate = currentTime.add(const Duration(days: 1));
@@ -152,7 +168,6 @@ class AlarmService {
     const androidDetails = AndroidNotificationDetails(
       'critical_alarm_channel',
       'Critical Alarms',
-      channelDescription: 'High-priority channel for alarms',
       importance: Importance.max,
       priority: Priority.max,
       fullScreenIntent: true,
@@ -170,11 +185,16 @@ class AlarmService {
     );
   }
 
-  static Future<void> _playAlarmSound(AudioPlayer player, String? audioPath) async {
+  static Future<void> _playAlarmSound(
+      AudioPlayer player, String? audioPath) async {
     try {
-      await player.setAndroidAudioAttributes(const AndroidAudioAttributes(
-        usage: AndroidAudioUsage.alarm,
-        contentType: AndroidAudioContentType.music,
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        androidAudioAttributes: AndroidAudioAttributes(
+          usage: AndroidAudioUsage.alarm,
+          contentType: AndroidAudioContentType.music,
+        ),
       ));
 
       if (audioPath != null && audioPath.isNotEmpty) {
@@ -184,7 +204,8 @@ class AlarmService {
           await player.setAudioSource(AudioSource.file(audioPath));
         }
       } else {
-        await player.setAudioSource(AudioSource.asset('assets/audio/alarm.mp3'));
+        await player
+            .setAudioSource(AudioSource.asset('assets/audio/alarm.mp3'));
       }
 
       await player.setLoopMode(LoopMode.one);

@@ -15,6 +15,7 @@ dependencies:
   supabase_flutter: ^2.0.0
   android_alarm_manager_plus: ^3.0.0
   just_audio: ^0.9.36
+  audio_session: ^0.1.18
   flutter_local_notifications: ^17.0.0
   permission_handler: ^11.3.1
   path_provider: ^2.1.2
