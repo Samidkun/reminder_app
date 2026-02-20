@@ -4,26 +4,24 @@ part 'alarm_model.g.dart';
 
 @collection
 class AlarmModel {
-  Id id = Isar.autoIncrement;
+  Id id = Isar.autoIncrement; // ID unik buat ngebatalin alarm
 
   late String title;
+  late DateTime time; // Jam & menit alarm
   
-  late DateTime time;
-  
-  late List<int> daysEnabled; // 1-7 for Mon-Sun
-  
-  late bool isActive;
-  
-  late int snoozeDuration; // in minutes
-  
-  late bool isCloudSynced;
+  @Index()
+  bool isActive = true;
 
-  AlarmModel({
-    required this.title,
-    required this.time,
-    required this.daysEnabled,
-    this.isActive = true,
-    this.snoozeDuration = 5,
-    this.isCloudSynced = false,
-  });
+  // Fitur Advanced
+  List<int> repeatDays = []; // 1 untuk Senin, 7 untuk Minggu
+  bool isVibrate = true;
+  String? audioPath; // Path ringtone custom
+  
+  // Logic Challenge
+  String challengeType = 'none'; // none, math, shake
+  int difficultyLevel = 1; // Level soal matematika
+
+  // Logic Snooze
+  int snoozeDuration = 5; // Dalam menit
+  int snoozeCount = 0;
 }
