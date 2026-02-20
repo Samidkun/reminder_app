@@ -16,6 +16,16 @@ class AlarmService {
   static AudioPlayer? _backgroundAudioPlayer;
   static FlutterLocalNotificationsPlugin? _backgroundNotifications;
 
+  /// Cancel a scheduled alarm
+  static Future<void> cancelAlarm(int id) async {
+    await AndroidAlarmManager.cancel(id);
+  }
+
+  /// Cancel all scheduled alarms
+  static Future<void> cancelAll() async {
+    await AndroidAlarmManager.cancelAll();
+  }
+
   /// Initialize the alarm manager in the main isolate
   static Future<void> init() async {
     await AndroidAlarmManager.initialize();
